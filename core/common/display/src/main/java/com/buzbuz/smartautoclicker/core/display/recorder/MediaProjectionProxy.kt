@@ -83,6 +83,12 @@ internal class MediaProjectionProxy @Inject constructor() {
             Log.e(TAG, "Can't create VirtualDisplay, screencast permission is no longer valid", sEx)
             onStopListener?.invoke()
             null
+        } catch (iEx: IllegalArgumentException) {
+            // FIX (Android 16+): createVirtualDisplay() can throw IllegalArgumentException
+            // if the surface is in an invalid state or the projection token has expired.
+            Log.e(TAG, "Can't create VirtualDisplay, invalid argument (Android 16+ token issue?)", iEx)
+            onStopListener?.invoke()
+            null
         }
     }
 
@@ -115,6 +121,18 @@ internal class MediaProjectionProxy @Inject constructor() {
             Log.w(TAG, "Foreground service is not started yet, retrying...")
             getProjectionRetries += 1
             return getMediaProjectionWithRetryDelay(projectionManager, resultCode, data)
+        } catch (isEx: IllegalStateException) {
+            // FIX (Android 16+): getMediaProjection() can throw IllegalStateException when
+            // called before the foreground service type is fully committed, or when the
+            // MediaProjection token has already been consumed. Treat it the same as a
+            // SecurityException and retry with back-off.
+            if (getProjectionRetries >= GET_PROJECTION_RETRY_MAX_COUNT) {
+                Log.e(TAG, "Failed to get MediaProjection (IllegalStateException) after $getProjectionRetries retries")
+                return null
+            }
+            Log.w(TAG, "IllegalStateException getting MediaProjection (Android 16+), retrying…", isEx)
+            getProjectionRetries += 1
+            return getMediaProjectionWithRetryDelay(projectionManager, resultCode, data)
         }
     }
 
@@ -125,6 +143,16 @@ internal class MediaProjectionProxy @Inject constructor() {
             Log.i(TAG, "Projection stopped by the user")
             // We only notify, we let the detector take care of calling stopScreenRecord
             onStopListener?.invoke()
+        }
+
+        // FIX (Android 16+): onCapturedContentVisibilityChanged is new in API 36.
+        // When the captured content becomes invisible (e.g. another full-screen overlay
+        // covers the screen), the MediaProjection stream may stall. Log it so it shows
+        // up in crash reports without crashing the app.
+        override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+            if (!isVisible) {
+                Log.w(TAG, "Captured content became invisible — stream may stall on Android 16+")
+            }
         }
     }
 }
