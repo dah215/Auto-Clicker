@@ -7,43 +7,70 @@ on:
 
 jobs:
   build:
-    name: Build application
+    name: Build Release APK
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: set up JDK 21
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'zulu'
-        java-version: '21'
+      # Java 21 bắt buộc cho AGP 8.11.x
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: 'gradle'
 
-    - name: set NDK
-      shell: bash
-      run: |
-        set -x
-        echo "ANDROID_NDK=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
-        echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
-        echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+      # Cài đúng NDK version mà project yêu cầu (libs.versions.toml: androidNdk = "28.2.13676358")
+      # Không dùng ANDROID_NDK_LATEST_HOME vì thường không khớp phiên bản cần thiết
+      - name: Install NDK 28.2.13676358
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;28.2.13676358" \
+            "build-tools;36.0.0" \
+            "platforms;android-36" \
+            2>&1 | tail -5
 
-    - name: Restore keystore
-      run: |
-        echo "${{ secrets.RELEASE_KEYSTORE }}" > smartautoclicker.jks.asc
-        gpg -d --passphrase "${{ secrets.RELEASE_KEYSTORE_PASSPHRASE }}" --batch smartautoclicker.jks.asc > smartautoclicker/smartautoclicker.jks
+      - name: Set NDK environment variables
+        run: |
+          NDK_PATH="$ANDROID_HOME/ndk/28.2.13676358"
+          echo "ANDROID_NDK=$NDK_PATH"         >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_PATH"    >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$NDK_PATH"    >> $GITHUB_ENV
 
-    - name: Build with Gradle
-      run: |
-        ./gradlew --info \
-          -PsigningStorePassword="${{ secrets.SIGNING_STORE_PASSWORD }}" \
-          -PsigningKeyAlias="${{ secrets.SIGNING_KEY_ALIAS }}" \
-          -PsigningKeyPassword="${{ secrets.SIGNING_KEY_PASSWORD }}" \
-          assembleFDroidRelease bundleFDroidRelease
-      env:
-        JAVA_TOOL_OPTIONS: "-Djava.net.preferIPv4Stack=true"
+      # Cache Gradle để build nhanh hơn
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: smartautoclicker-release
-        path: smartautoclicker/build/outputs/
+      # Giải mã keystore từ secret (base64-encoded GPG)
+      - name: Restore keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE }}" > smartautoclicker.jks.asc
+          gpg -d --passphrase "${{ secrets.RELEASE_KEYSTORE_PASSPHRASE }}" \
+              --batch smartautoclicker.jks.asc > smartautoclicker/smartautoclicker.jks
+
+      # Build Release APK + AAB
+      - name: Build Release
+        run: |
+          ./gradlew --stacktrace --no-daemon \
+            -PsigningStorePassword="${{ secrets.SIGNING_STORE_PASSWORD }}" \
+            -PsigningKeyAlias="${{ secrets.SIGNING_KEY_ALIAS }}" \
+            -PsigningKeyPassword="${{ secrets.SIGNING_KEY_PASSWORD }}" \
+            assembleFDroidRelease bundleFDroidRelease
+        env:
+          JAVA_TOOL_OPTIONS: "-Djava.net.preferIPv4Stack=true"
+
+      - name: Upload Release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartautoclicker-release-${{ github.run_number }}
+          path: smartautoclicker/build/outputs/
+          retention-days: 30
