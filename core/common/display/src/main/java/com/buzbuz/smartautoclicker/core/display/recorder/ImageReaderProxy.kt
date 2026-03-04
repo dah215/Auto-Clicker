@@ -49,7 +49,11 @@ internal class ImageReaderProxy @Inject constructor(
     fun resize(size: Point) {
         copyImageRow = IntArray(size.x)
         imageReader?.close()
-        imageReader = ImageReader.newInstance(size.x, size.y, PixelFormat.RGBA_8888, 2)
+        // FIX (Android 16+): Increased maxImages 2→4.
+        // Android 16 delivers frames faster than the processing coroutine can consume them.
+        // With only 2 slots the reader fills up, acquireLatestImage() returns null on every
+        // call, and the original do-while screenshot loop spins forever → UI freeze.
+        imageReader = ImageReader.newInstance(size.x, size.y, PixelFormat.RGBA_8888, 4)
     }
 
     fun close() {
