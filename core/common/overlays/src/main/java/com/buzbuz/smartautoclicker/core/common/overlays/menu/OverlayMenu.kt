@@ -89,9 +89,15 @@ abstract class OverlayMenu(
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.WRAP_CONTENT,
         OverlayManager.OVERLAY_WINDOW_TYPE,
+        // FIX (Android 16+ / API 36): FLAG_LAYOUT_NO_LIMITS is rejected for
+        // TYPE_ACCESSIBILITY_OVERLAY windows on Android 16 — the system enforces display
+        // insets more strictly and clips or mis-positions overlays that use it.
+        // Drop the flag for API 36+ while keeping it on older versions where it is still
+        // required to allow the floating menu to sit at screen edges.
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                (if (android.os.Build.VERSION.SDK_INT < 36)
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS else 0) or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT,
     ).apply {
