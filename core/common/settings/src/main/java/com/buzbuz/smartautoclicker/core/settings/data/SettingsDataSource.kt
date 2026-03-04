@@ -23,7 +23,6 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import com.buzbuz.smartautoclicker.core.base.PreferencesDataStore
 import com.buzbuz.smartautoclicker.core.base.di.Dispatcher
 import com.buzbuz.smartautoclicker.core.base.di.HiltCoroutineDispatchers.IO
-import com.buzbuz.smartautoclicker.core.base.workarounds.isImpactedByInputBlock
 
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
@@ -99,7 +98,6 @@ internal class SettingsDataSource @Inject constructor(
         dataStore.data.map { preferences -> preferences[KEY_INPUT_BLOCK_WORKAROUND] ?: false }
 
     internal suspend fun toggleInputBlockWorkaround() {
-        if (!isImpactedByInputBlock()) return
         dataStore.edit { preferences ->
             preferences[KEY_INPUT_BLOCK_WORKAROUND] = !(preferences[KEY_INPUT_BLOCK_WORKAROUND] ?: false)
         }
