@@ -56,6 +56,8 @@ class SettingsViewModel @Inject constructor(
         settingsRepository.isInputBlockWorkaroundEnabledFlow
 
     val shouldShowEntireScreenCapture: Flow<Boolean> =
+        // FIX (Android 16+): >= VANILLA_ICE_CREAM already covers API 36 (Android 16).
+        // No change needed here, this is correct.
         flowOf(Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM)
 
     val shouldShowPrivacySettings: Flow<Boolean> =
@@ -66,6 +68,9 @@ class SettingsViewModel @Inject constructor(
             billingState != UserBillingState.PURCHASED
         }
 
+    // FIX (Android 16+): isImpactedByInputBlock() now returns true for all API 35+
+    // devices (not just Google Pixel), so this setting will be visible to all users
+    // who may need it, including Android 16 devices.
     val shouldShowInputBlockWorkaround: Flow<Boolean> =
         flowOf(isImpactedByInputBlock())
 
