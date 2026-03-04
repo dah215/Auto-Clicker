@@ -14,16 +14,45 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: set up JDK 21
+
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '21'
-      - name: Local unit tests with Gradle
-        run: ./gradlew testFDroidDebugUnitTest
+          cache: 'gradle'
+
+      # Unit tests cũng cần NDK vì project link native lib
+      - name: Install NDK 28.2.13676358
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;28.2.13676358" \
+            "platforms;android-36" \
+            2>&1 | tail -5
+
+      - name: Set NDK environment variables
+        run: |
+          NDK_PATH="$ANDROID_HOME/ndk/28.2.13676358"
+          echo "ANDROID_NDK=$NDK_PATH"      >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Run unit tests
+        run: ./gradlew testFDroidDebugUnitTest --no-daemon
         env:
           JAVA_TOOL_OPTIONS: "-Djava.net.preferIPv4Stack=true"
-      - name: Upload tests results
+
+      - name: Upload test results
         uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
