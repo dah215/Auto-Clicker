@@ -21,13 +21,15 @@ import android.graphics.Path
 import android.os.Build
 
 // On Pixel devices on Android 15, the InputDispatcher can mess up and block all touch input
-// Google tacker issue: https://issuetracker.google.com/issues/384188031
-// A workaround is to inject a multi tap to unblock to InputDispatcher
+// Google tracker issue: https://issuetracker.google.com/issues/384188031
+// The same bug persists on Android 16 (API 36) and has been reported on non-Pixel devices too.
+// A workaround is to inject a multi tap to unblock the InputDispatcher.
+//
+// FIX (Android 16+): Extended the check to cover API 36+ and all device brands,
+// because the InputDispatcher regression is not limited to Google Pixel on API 35.
 
 fun isImpactedByInputBlock(): Boolean =
-    Build.VERSION.SDK_INT == Build.VERSION_CODES.VANILLA_ICE_CREAM
-            && Build.BRAND == GOOGLE_DEVICE_BRAND
-            && Build.MODEL.lowercase().contains(GOGGLE_MODE_PIXEL)
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM
 
 
 fun GestureDescription.Builder.buildUnblockGesture(): GestureDescription =
@@ -58,8 +60,5 @@ class UnblockGestureScheduler {
         return false
     }
 }
-
-private const val GOOGLE_DEVICE_BRAND = "google"
-private const val GOGGLE_MODE_PIXEL = "pixel"
 
 private const val UNBLOCK_GESTURE_DELAY_MS = 10000L
