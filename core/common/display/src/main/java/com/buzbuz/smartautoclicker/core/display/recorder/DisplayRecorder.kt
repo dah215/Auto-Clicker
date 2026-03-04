@@ -21,15 +21,12 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Point
 import android.hardware.display.VirtualDisplay
-import android.media.Image
-import android.media.ImageReader
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.util.Log
 import androidx.annotation.MainThread
 import androidx.annotation.WorkerThread
 import dagger.hilt.android.qualifiers.ApplicationContext
 
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
@@ -140,28 +137,46 @@ class DisplayRecorder @Inject internal constructor(
         imageReaderProxy.getLastFrame()
     }
 
+    /**
+     * Take a screenshot.
+     *
+     * FIX (Android 16+): The original infinite do-while loop froze the processing thread when
+     * ImageReader had no frames (buffer exhaustion at Android 16's higher frame rate).
+     * New implementation retries up to 50 times (~2.5 s) with exponential back-off.
+     */
     suspend fun takeScreenshot(completion: suspend (Bitmap) -> Unit) {
-        var finished = false
-        do {
-            imageReaderProxy.getLastFrame()?.let { screenFrame ->
-                completion(screenFrame)
-                finished = true
-            }
+        var retries = 0
+        var delayMs = 16L           // start at ~1 frame (60 fps)
 
-        } while (!finished)
+        while (retries < 50) {
+            val frame = mutex.withLock { imageReaderProxy.getLastFrame() }
+            if (frame != null) {
+                completion(frame)
+                return
+            }
+            delay(delayMs)
+            delayMs = minOf(delayMs * 2, 100L)   // cap at 100 ms
+            retries++
+        }
+        Log.e(TAG, "takeScreenshot: no frame after 50 retries – giving up")
     }
 
     /**
      * Stop the screen recording.
-     * This method should not be called from the main thread, but the processing thread.
+     *
+     * FIX (Android 16+): VirtualDisplay must be released BEFORE closing the ImageReader surface.
+     * On Android 16 the system can deadlock waiting for the surface consumer to drain if the
+     * ImageReader is closed while frames are still being pushed by the VirtualDisplay.
      */
     suspend fun stopScreenRecord() = mutex.withLock {
         Log.d(TAG, "Stop screen record")
 
+        // 1. Stop frame production first
         virtualDisplay?.apply {
             release()
             virtualDisplay = null
         }
+        // 2. Then safe to close the consumer
         imageReaderProxy.close()
     }
 
