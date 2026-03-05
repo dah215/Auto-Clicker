@@ -29,48 +29,84 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 
 @Singleton
 internal class GestureExecutor @Inject constructor() : Dumpable {
 
-    private var resultCallback: GestureResultCallback? = null
     private var currentContinuation: Continuation<Boolean>? = null
 
     private var completedGestures: Long = 0L
     private var cancelledGestures: Long = 0L
     private var errorGestures: Long = 0L
+    private var timedOutGestures: Long = 0L
 
 
     fun clear() {
         completedGestures = 0L
         cancelledGestures = 0L
         errorGestures = 0L
-
-        resultCallback = null
+        timedOutGestures = 0L
         currentContinuation = null
     }
 
     suspend fun dispatchGesture(service: AccessibilityService, gesture: GestureDescription): Boolean {
         if (currentContinuation != null) {
             Log.w(TAG, "Previous gesture result is not available yet, clearing listener to avoid stale events")
-            resultCallback = null
             currentContinuation = null
         }
 
-        resultCallback = resultCallback ?: newGestureResultCallback()
-        return suspendCoroutine { continuation ->
-            currentContinuation = continuation
+        // FIX (Android 16+): Always create a NEW GestureResultCallback for every gesture.
+        // The original code reused the same callback instance (`resultCallback ?: new…`).
+        // On Android 16 the framework can deliver a completion event for a previous gesture
+        // *after* a new one has been dispatched, causing the stale callback to resume the
+        // new continuation immediately with a false result → processing loop permanently
+        // suspended (frozen detection / no more clicks).
+        val callback = newGestureResultCallback()
 
-            try {
-                service.dispatchGesture(gesture, resultCallback, null)
-            } catch (rEx: RuntimeException) {
-                Log.w(TAG, "System is not responsive, the user might be spamming gesture too quickly", rEx)
-                errorGestures++
-                resumeExecution(gestureError = true)
+        // FIX (Android 16+): Wrap in withTimeoutOrNull so the processing coroutine is NEVER
+        // permanently suspended. On Android 16 the InputDispatcher can silently drop gestures
+        // (blocked state, Pixel bug #384188031 or similar) meaning neither onCompleted nor
+        // onCancelled fires. Without a timeout the suspendCoroutine blocks forever → UI frozen.
+        //
+        // Timeout is set to gesture duration + 3 s headroom, min 3 s for instant clicks.
+        val gestureDurationMs = runCatching {
+            gesture.strokeCount.let { count ->
+                (0 until count).maxOfOrNull { gesture.getStroke(it).duration } ?: 0L
+            }
+        }.getOrDefault(0L)
+        val timeoutMs = gestureDurationMs + GESTURE_TIMEOUT_HEADROOM_MS
+
+        val result = withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { continuation ->
+                currentContinuation = continuation
+
+                continuation.invokeOnCancellation {
+                    // Coroutine was cancelled (timeout or scope cancel) — clear reference
+                    currentContinuation = null
+                }
+
+                try {
+                    service.dispatchGesture(gesture, callback, null)
+                } catch (rEx: RuntimeException) {
+                    Log.w(TAG, "System is not responsive, the user might be spamming gesture too quickly", rEx)
+                    errorGestures++
+                    resumeExecution(gestureError = true)
+                }
             }
         }
+
+        if (result == null) {
+            // Timeout hit — gesture callback never fired
+            timedOutGestures++
+            currentContinuation = null
+            Log.w(TAG, "dispatchGesture timed out after ${timeoutMs}ms (InputDispatcher may be blocked on Android 16)")
+            return false
+        }
+
+        return result
     }
 
     private fun resumeExecution(gestureError: Boolean) {
@@ -105,8 +141,15 @@ internal class GestureExecutor @Inject constructor() : Dumpable {
             append(contentPrefix).append("Completed=$completedGestures").println()
             append(contentPrefix).append("Cancelled=$cancelledGestures").println()
             append(contentPrefix).append("Error=$errorGestures").println()
+            append(contentPrefix).append("TimedOut=$timedOutGestures").println()
         }
     }
 }
 
 private const val TAG = "GestureExecutor"
+
+/**
+ * Extra headroom added on top of the gesture's own stroke duration before we declare a timeout.
+ * 3 seconds is enough to cover normal system latency, including slow Samsung/Pixel dispatchers.
+ */
+private const val GESTURE_TIMEOUT_HEADROOM_MS = 3_000L
