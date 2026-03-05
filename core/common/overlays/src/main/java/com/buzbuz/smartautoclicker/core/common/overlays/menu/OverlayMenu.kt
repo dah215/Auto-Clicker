@@ -227,6 +227,10 @@ abstract class OverlayMenu(
         // Add the overlay, if any. It needs to be below the menu or user won't be able to click on the menu.
         screenOverlayView?.let {
             if (animateOverlayView()) it.visibility = View.GONE
+            // FIX (Android 16+): The overlay window starts hidden, so start with FLAG_NOT_TOUCHABLE
+            // to ensure the transparent window doesn't block touches from the very beginning.
+            overlayLayoutParams.flags = overlayLayoutParams.flags or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
             if (!windowManager.safeAddView(it, overlayLayoutParams)) {
                 finish()
                 return
@@ -513,6 +517,12 @@ abstract class OverlayMenu(
      * Change the overlay view visibility, allowing the user the click on the Activity bellow the overlays.
      * Updates the hide button state, if any.
      *
+     * FIX (Android 16+): Setting view.visibility = GONE is NOT enough to unblock touches.
+     * The overlay Window is still present in the WindowManager and keeps intercepting touch
+     * events even when its root view is GONE. We must toggle FLAG_NOT_TOUCHABLE on the
+     * WindowManager.LayoutParams and call updateViewLayout() so the system stops routing
+     * input to this window when the overlay is hidden.
+     *
      * @param isOverlayVisible the new visibility to apply.
      */
     protected fun setOverlayViewVisibility(isOverlayVisible: Boolean) {
@@ -523,9 +533,22 @@ abstract class OverlayMenu(
             if (isOverlayVisible) {
                 visibility = View.VISIBLE
                 hideOverlayButton?.setImageResource(R.drawable.ic_visible_on)
+                // Restore touch delivery when the overlay becomes visible
+                overlayLayoutParams.flags = overlayLayoutParams.flags and
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
             } else {
                 visibility = View.GONE
                 hideOverlayButton?.setImageResource(R.drawable.ic_visible_off)
+                // Block all touch events when the overlay is hidden so the underlying
+                // app can receive touches normally. Without this the transparent window
+                // still intercepts every tap even though nothing is drawn.
+                overlayLayoutParams.flags = overlayLayoutParams.flags or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            }
+
+            // Apply the flag change to the WindowManager immediately
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                windowManager.safeUpdateViewLayout(this, overlayLayoutParams)
             }
 
             onScreenOverlayVisibilityChanged(isOverlayVisible)
