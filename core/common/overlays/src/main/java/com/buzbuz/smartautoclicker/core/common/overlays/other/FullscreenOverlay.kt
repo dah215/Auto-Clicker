@@ -41,7 +41,9 @@ abstract class FullscreenOverlay(@StyleRes theme: Int? = null) : BaseOverlay(the
         OverlayManager.OVERLAY_WINDOW_TYPE,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                // FIX (Android 16+): FLAG_LAYOUT_NO_LIMITS restricted for accessibility overlays on API 36+
+                (if (android.os.Build.VERSION.SDK_INT < 36)
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS else 0) or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT,
     )
@@ -84,6 +86,9 @@ abstract class FullscreenOverlay(@StyleRes theme: Int? = null) : BaseOverlay(the
 
     @CallSuper
     override fun onStop() {
+        // FIX (Android 16+): Set FLAG_NOT_TOUCHABLE before removeView() to prevent the
+        // brief window-still-present gap from blocking touch events.
+        viewLayoutParams.flags = viewLayoutParams.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         windowManager.removeView(view)
     }
 }
