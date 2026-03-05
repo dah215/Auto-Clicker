@@ -47,6 +47,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -332,10 +333,40 @@ class DetectorEngine @Inject constructor(
     private suspend fun processScreenImages() {
         _state.emit(DetectorState.DETECTING)
 
+        // FIX (Android 16+): Use progressive back-off for null frames.
+        // The original code used a fixed 20 ms delay for every null frame. On Android 16,
+        // brief null bursts are normal (orientation change, system UI animation); a fixed
+        // short delay keeps the coroutine spinning hard on the CPU. Progressive back-off
+        // lets transient misses recover quickly while reducing CPU burn during sustained starvation.
+        var nullStreak = 0
+
         while (processingJob?.isActive == true) {
-            displayRecorder.acquireLatestBitmap()?.let { screenFrame ->
-                scenarioProcessor?.process(screenFrame)
-            } ?: delay(NO_IMAGE_DELAY_MS)
+            val frame = displayRecorder.acquireLatestBitmap()
+            if (frame != null) {
+                nullStreak = 0
+
+                // FIX (Android 16+): Wrap each frame processing in a per-frame watchdog.
+                // If scenarioProcessor.process() hangs (e.g. a gesture never fires its
+                // callback, or the native detector deadlocks), withTimeoutOrNull unblocks
+                // the loop after FRAME_PROCESSING_TIMEOUT_MS so detection continues.
+                // The timeout is generous (10 s) to avoid false positives on complex scenarios.
+                val processed = withTimeoutOrNull(FRAME_PROCESSING_TIMEOUT_MS) {
+                    scenarioProcessor?.process(frame)
+                    true
+                }
+                if (processed == null) {
+                    Log.w(TAG, "Frame processing timed out after ${FRAME_PROCESSING_TIMEOUT_MS}ms — skipping frame. " +
+                            "This may indicate a stuck gesture on Android 16+.")
+                }
+            } else {
+                nullStreak++
+                val delayMs = when {
+                    nullStreak < 5  -> NO_IMAGE_DELAY_MS          // ~33 ms — transient miss
+                    nullStreak < 20 -> NO_IMAGE_DELAY_MS * 2L     // ~66 ms — brief stall
+                    else            -> NO_IMAGE_DELAY_MS * 4L     // ~132 ms — sustained starvation
+                }
+                delay(delayMs)
+            }
         }
     }
 
@@ -380,7 +411,16 @@ internal enum class DetectorState {
  * Waiting delay after getting a null image.
  * This is to avoid spamming when there is no image.
  */
-private const val NO_IMAGE_DELAY_MS = 20L
+// FIX (Android 16+): raised from 20 ms to 33 ms (~1 frame at 30 fps).
+// The original 20 ms caused busy-spinning when the ImageReader was momentarily empty.
+private const val NO_IMAGE_DELAY_MS = 33L
+
+/**
+ * Maximum time a single frame's processing (detection + action execution) is allowed to take.
+ * If exceeded, the frame is skipped and the loop continues. This is a safety net against
+ * a frozen gesture callback on Android 16+.
+ */
+private const val FRAME_PROCESSING_TIMEOUT_MS = 10_000L
 
 /** Tag for logs. */
 private const val TAG = "DetectorEngine"
